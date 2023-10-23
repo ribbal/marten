@@ -76,7 +76,7 @@ public class created_timestamp_queries: OneOffConfigurationsContext
         session.Store(user1, user2);
         session.SaveChanges();
 
-        var metadata = session.MetadataFor(user4);
+        var metadata = session.MetadataFor(user2);
         metadata.ShouldNotBeNull();
 
         var epoch = metadata.CreatedAt;
