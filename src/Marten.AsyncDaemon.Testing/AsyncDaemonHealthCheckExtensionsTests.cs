@@ -18,6 +18,7 @@ namespace Marten.AsyncDaemon.Testing;
 
 public class AsyncDaemonHealthCheckExtensionsTests: DaemonContext
 {
+
     private FakeHealthCheckBuilderStub builder = new();
 
     public AsyncDaemonHealthCheckExtensionsTests(ITestOutputHelper output) : base(output)

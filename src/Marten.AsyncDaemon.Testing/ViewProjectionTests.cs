@@ -42,7 +42,7 @@ public class ViewProjectionTests: DaemonContext
         foreach (var slice in slices.SelectMany(x => x.Slices).ToArray())
         {
             var events = slice.Events();
-            events.All(x => x.Data is IDayEvent || x.Data is Movement).ShouldBeTrue();
+            events.All(x => x.Data is IDayEvent || x.Data is Movement || x.Data is Stop).ShouldBeTrue();
             events.Select(x => x.Data).OfType<IDayEvent>().All(x => x.Day == slice.Id)
                 .ShouldBeTrue();
 
@@ -51,9 +51,9 @@ public class ViewProjectionTests: DaemonContext
             {
                 var index = events.As<List<IEvent>>().IndexOf(travel);
 
-                for (var i = 0; i < travel.Data.Movements.Count; i++)
+                for (var i = 0; i < travel.Data.Stops.Count; i++)
                 {
-                    events.ElementAt(index + i + 1).Data.ShouldBeTheSameAs(travel.Data.Movements[i]);
+                    events.ElementAt(index + i + 1).Data.ShouldBeTheSameAs(travel.Data.Stops[i]);
                 }
             }
         }
@@ -96,6 +96,11 @@ public class ViewProjectionTests: DaemonContext
                 .Where(x => x.Direction == Direction.East)
                 .Sum(x => x.Distance));
 
+            day.Stops.ShouldBe(matching
+                .OfType<Travel>()
+                .SelectMany(x => x.Stops)
+                .Count());
+
             day.Version.ShouldBeGreaterThan(0);
         }
     }
@@ -112,6 +117,8 @@ public class Day
 
     // how many trips ended on this day?
     public int Ended { get; set; }
+
+    public int Stops { get; set; }
 
     // how many miles did the active trips
     // drive in which direction on this day?
@@ -135,6 +142,9 @@ public class DayProjection: MultiStreamProjection<Day, int>
         // on each Movement child of the Travel event
         // as if it were its own event
         FanOut<Travel, Movement>(x => x.Movements);
+
+        // You can also access Event data
+        FanOut<Travel, Stop>(x => x.Data.Stops);
 
         ProjectionName = "Day";
     }
@@ -163,6 +173,8 @@ public class DayProjection: MultiStreamProjection<Day, int>
                 throw new ArgumentOutOfRangeException();
         }
     }
+
+    public void Apply(Day day, Stop e) => day.Stops++;
 }
 
 #endregion

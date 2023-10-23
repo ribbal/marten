@@ -24,6 +24,6 @@ public class CreatedBeforeParser: IMethodCallParser
     {
         var time = expression.Arguments.Last().Value().As<DateTimeOffset>();
 
-        return new WhereFragment($"d.{SchemaConstants.CreatedTimestampColumn} < ?", time);
+        return new WhereFragment($"d.{SchemaConstants.CreatedAtColumn} < ?", time);
     }
 }
