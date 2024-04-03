@@ -46,15 +46,14 @@ public class when_skipping_events_in_daemon : DaemonContext
             opts.Projections.Add<ErrorRejectingEventProjection>(ProjectionLifecycle.Async);
             opts.Projections.Add<CollateNames>(ProjectionLifecycle.Async);
 
-            opts.Projections.OnApplyEventException().SkipEvent();
-            opts.Projections.OnException<NpgsqlException>().RetryLater(50.Milliseconds(), 250.Milliseconds(), 500.Milliseconds())
-                .Then.Stop();
+            opts.Projections.RebuildErrors.SkipApplyErrors = true;
+            opts.Projections.Errors.SkipApplyErrors = true;
         });
     }
 
 
 
-    private async Task<ProjectionDaemon> PublishTheEvents()
+    private async Task<IProjectionDaemon> PublishTheEvents()
     {
         var daemon = await StartDaemon();
 
@@ -82,7 +81,7 @@ public class when_skipping_events_in_daemon : DaemonContext
     {
         var daemon = await PublishTheEvents();
 
-        var shards = daemon.CurrentShards();
+        var shards = daemon.CurrentAgents();
 
         foreach (var shard in shards)
         {
@@ -122,12 +121,13 @@ public class when_skipping_events_in_daemon : DaemonContext
     [Fact]
     public async Task see_the_dead_letter_events()
     {
-        await PublishTheEvents();
+        var daemon = await PublishTheEvents();
+
+        // Drain the dead letter events queued up
+        await daemon.StopAllAsync();
 
         theSession.Logger = new TestOutputMartenLogger(_output);
         var skipped = await theSession.Query<DeadLetterEvent>().ToListAsync();
-
-
 
         skipped.Where(x => x.ProjectionName == "CollateNames" && x.ShardName == "All")
             .Select(x => x.EventSequence).OrderBy(x => x)

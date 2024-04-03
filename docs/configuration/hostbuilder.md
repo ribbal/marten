@@ -1,19 +1,13 @@
 # Bootstrapping in .Net Applications
 
 :::tip
-The exact formula for bootstrapping .Net applications has changed quite a bit from early .Net Core to the latest `WebApplication` model in .Net 6.0 at the time this page was last updated. Regardless, the `IServiceCollection`
-abstraction for registering services in an IoC container has remained stable and everything in this
-page functions against that model.
+The exact formula for bootstrapping .Net applications has changed quite a bit from early .Net Core to the latest `WebApplication` model in .Net 6.0 at the time this page was last updated. Regardless, the `IServiceCollection` abstraction for registering services in an IoC container has remained stable and everything in this page functions against that model.
 :::
 
-As briefly shown in the [getting started](/) page, Marten comes with extension methods
-for the .Net Core standard `IServiceCollection` to quickly add Marten services to any .Net application that is bootstrapped by
-either the [Generic IHostBuilder abstraction](https://docs.microsoft.com/en-us/aspnet/core/fundamentals/host/generic-host) or the [ASP.Net Core IWebHostBuilder](https://docs.microsoft.com/en-us/dotnet/api/microsoft.aspnetcore.hosting.iwebhostbuilder)
-or the [.Net 6 WebApplication](https://docs.microsoft.com/en-us/aspnet/core/migration/50-to-60?view=aspnetcore-6.0&tabs=visual-studio#new-hosting-model) hosting models.
+As briefly shown in the [getting started](/) page, Marten comes with extension methods for the .Net Core standard `IServiceCollection` to quickly add Marten services to any .Net application that is bootstrapped by either the [Generic IHostBuilder abstraction](https://docs.microsoft.com/en-us/aspnet/core/fundamentals/host/generic-host) or the [ASP.Net Core IWebHostBuilder](https://docs.microsoft.com/en-us/dotnet/api/microsoft.aspnetcore.hosting.iwebhostbuilder) or the [.Net 6 WebApplication](https://docs.microsoft.com/en-us/aspnet/core/migration/50-to-60?view=aspnetcore-6.0&tabs=visual-studio#new-hosting-model) hosting models.
 
 Jumping right into a basic ASP&#46;NET Core application using the out of the box Web API template, you'd have a class called `Startup` that holds most of the configuration for your application including
-the IoC service registrations for your application in the `Startup.ConfigureServices()` method. To add Marten
-to your application, use the `AddMarten()` method as shown below:
+the IoC service registrations for your application in the `Startup.ConfigureServices()` method. To add Marten to your application, use the `AddMarten()` method as shown below:
 
 <!-- snippet: sample_StartupConfigureServices -->
 <a id='snippet-sample_startupconfigureservices'></a>
@@ -39,8 +33,8 @@ builder.Services.AddMarten(options =>
 The `AddMarten()` method will add these service registrations to your application:
 
 1. `IDocumentStore` with a *Singleton* lifetime. The document store can be used to create sessions, query the configuration of Marten, generate schema migrations, and do bulk inserts.
-1. `IDocumentSession` with a *Scoped* lifetime for all read and write operations. **By default**, this is done with the `IDocumentStore.OpenSession()` method and the session created will have the identity map behavior
-1. `IQuerySession` with a *Scoped* lifetime for all read operations against the document store.
+2. `IDocumentSession` with a *Scoped* lifetime for all read and write operations. **By default**, this is done with the `IDocumentStore.OpenSession()` method and the session created will have the identity map behavior
+3. `IQuerySession` with a *Scoped* lifetime for all read operations against the document store.
 
 For more information, see:
 
@@ -116,18 +110,53 @@ services.AddMarten(options)
 <sup><a href='https://github.com/JasperFx/marten/blob/master/src/AspNetCoreWithMarten/Samples/ByStoreOptions/Startup.cs#L23-L37' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_addmartenbystoreoptions' title='Start of snippet'>anchor</a></sup>
 <!-- endSnippet -->
 
-The last option may be best for more complicated Marten configuration just to keep the configuration code cleaner as `Startup` classes can become convoluted.
+## Using NpgsqlDataSource <Badge type="tip" text="7.0" />
+
+::: tip
+You will have to use the `NpgsqlDataSource` registration if you want to opt into Npgsql logging. See the [Npgsql documentation on logging](https://www.npgsql.org/doc/diagnostics/logging.html?tabs=console)
+for more information.
+:::
+
+You can also use the [NpgsqlDataSource](https://www.npgsql.org/doc/basic-usage.html#data-source) to configure Marten connection settings. From [Npgsql docs](https://www.npgsql.org/doc/basic-usage.html#data-source):
+
+> The data source represents your PostgreSQL database and can hand out connections to it or support direct execution of SQL against it. The data source encapsulates the various Npgsql configuration needed to connect to PostgreSQL, as well the connection pooling which makes Npgsql efficient.
+
+You can use the `AddNpgsqlDataSource` method from [Npgsql.DependencyInjection package](https://www.nuget.org/packages/Npgsql.DependencyInjection) to perform a setup by calling the `UseNpgsqlDataSourceMethod`:
+
+<!-- snippet: sample_using_UseNpgsqlDataSource -->
+<a id='snippet-sample_using_usenpgsqldatasource'></a>
+```cs
+services.AddNpgsqlDataSource(ConnectionSource.ConnectionString);
+
+services.AddMarten()
+    .UseLightweightSessions()
+    .UseNpgsqlDataSource();
+```
+<sup><a href='https://github.com/JasperFx/marten/blob/master/src/CoreTests/MartenServiceCollectionExtensionsTests.cs#L291-L299' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_using_usenpgsqldatasource' title='Start of snippet'>anchor</a></sup>
+<!-- endSnippet -->
+
+If you're on .NET 8 (and above), you can also use a dedicated [keyed registration](https://learn.microsoft.com/en-us/dotnet/core/whats-new/dotnet-8#keyed-di-services). This can be useful for scenarios where you need more than one data source registered:
+
+<!-- snippet: sample_using_UseNpgsqlDataSource -->
+<a id='snippet-sample_using_usenpgsqldatasource'></a>
+```cs
+services.AddNpgsqlDataSource(ConnectionSource.ConnectionString);
+
+services.AddMarten()
+    .UseLightweightSessions()
+    .UseNpgsqlDataSource();
+```
+<sup><a href='https://github.com/JasperFx/marten/blob/master/src/CoreTests/MartenServiceCollectionExtensionsTests.cs#L291-L299' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_using_usenpgsqldatasource' title='Start of snippet'>anchor</a></sup>
+<!-- endSnippet -->
 
 ## Composite Configuration with ConfigureMarten()
 
-The `AddMarten()` mechanism introduced in later versions of Marten v3 assumes that you are expressing all of the Marten configuration in one place and "know" what that configuration is upfront. Consider these possibilities where that isn't necessarily possible or desirable:
+The `AddMarten()` mechanism assumes that you are expressing all of the Marten configuration in one place and "know" what that configuration is upfront. Consider these possibilities where that isn't necessarily possible or desirable:
 
 1. You want to override Marten configuration in integration testing scenarios (I do this quite commonly)
 2. Many users have expressed the desire to keep parts of Marten configuration in potentially separate assemblies or subsystems in such a way that they could later break up the current service into smaller services
 
-Fear not, Marten V5.0 introduced a new way to add or modify the Marten configuration from `AddMarten()`. Let's assume
-that we're building a system that has a subsystem related to *users* and want to segregate all the service registrations and Marten configuration related to *users* into a single place like this extension
-method:
+Fear not, Marten V5.0 introduced a new way to add or modify the Marten configuration from `AddMarten()`. Let's assume that we're building a system that has a subsystem related to *users* and want to segregate all the service registrations and Marten configuration related to *users* into a single place like this extension method:
 
 <!-- snippet: sample_AddUserModule -->
 <a id='snippet-sample_addusermodule'></a>
@@ -186,7 +215,7 @@ public interface IConfigureMarten
     void Configure(IServiceProvider services, StoreOptions options);
 }
 ```
-<sup><a href='https://github.com/JasperFx/marten/blob/master/src/Marten/MartenServiceCollectionExtensions.cs#L772-L783' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_iconfiguremarten' title='Start of snippet'>anchor</a></sup>
+<sup><a href='https://github.com/JasperFx/marten/blob/master/src/Marten/MartenServiceCollectionExtensions.cs#L816-L827' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_iconfiguremarten' title='Start of snippet'>anchor</a></sup>
 <!-- endSnippet -->
 
 You could alternatively implement a custom `IConfigureMarten` (or `IConfigureMarten<T> where T : IDocumentStore` if you're [working with multiple databases](#working-with-multiple-marten-databases)) class like so:
@@ -365,6 +394,16 @@ public class CorrelatedMartenLogger: IMartenSessionLogger
         // Do some kind of logging using the correlation id of the ISession
     }
 
+    public void LogSuccess(NpgsqlBatch batch)
+    {
+        // Do some kind of logging using the correlation id of the ISession
+    }
+
+    public void LogFailure(NpgsqlBatch batch, Exception ex)
+    {
+        // Do some kind of logging using the correlation id of the ISession
+    }
+
     public void RecordSavedChanges(IDocumentSession session, IChangeSet commit)
     {
         // Do some kind of logging using the correlation id of the ISession
@@ -374,9 +413,19 @@ public class CorrelatedMartenLogger: IMartenSessionLogger
     {
 
     }
+
+    public void LogFailure(Exception ex, string message)
+    {
+
+    }
+
+    public void OnBeforeExecute(NpgsqlBatch batch)
+    {
+
+    }
 }
 ```
-<sup><a href='https://github.com/JasperFx/marten/blob/master/src/AspNetCoreWithMarten/Samples/PerScopeSessionCreation/Startup.cs#L22-L54' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_correlatedmartenlogger' title='Start of snippet'>anchor</a></sup>
+<sup><a href='https://github.com/JasperFx/marten/blob/master/src/AspNetCoreWithMarten/Samples/PerScopeSessionCreation/Startup.cs#L22-L74' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_correlatedmartenlogger' title='Start of snippet'>anchor</a></sup>
 <!-- endSnippet -->
 
 Now, let's move on to building out a custom session factory that will attach our correlated marten logger to sessions being resolved from the IoC container:
@@ -416,7 +465,7 @@ public class ScopedSessionFactory: ISessionFactory
     }
 }
 ```
-<sup><a href='https://github.com/JasperFx/marten/blob/master/src/AspNetCoreWithMarten/Samples/PerScopeSessionCreation/Startup.cs#L57-L89' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_customsessionfactorybyscope' title='Start of snippet'>anchor</a></sup>
+<sup><a href='https://github.com/JasperFx/marten/blob/master/src/AspNetCoreWithMarten/Samples/PerScopeSessionCreation/Startup.cs#L77-L109' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_customsessionfactorybyscope' title='Start of snippet'>anchor</a></sup>
 <!-- endSnippet -->
 
 Lastly, let's register our new session factory, but this time we need to take care to register the session factory as `Scoped` in the underlying container so we're using the correct `ISession` at runtime:
@@ -437,7 +486,7 @@ services.AddMarten(opts =>
     // Chained helper to replace the CustomSessionFactory
     .BuildSessionsWith<ScopedSessionFactory>(ServiceLifetime.Scoped);
 ```
-<sup><a href='https://github.com/JasperFx/marten/blob/master/src/AspNetCoreWithMarten/Samples/PerScopeSessionCreation/Startup.cs#L105-L118' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_addmartenwithcustomsessioncreationbyscope' title='Start of snippet'>anchor</a></sup>
+<sup><a href='https://github.com/JasperFx/marten/blob/master/src/AspNetCoreWithMarten/Samples/PerScopeSessionCreation/Startup.cs#L125-L138' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_addmartenwithcustomsessioncreationbyscope' title='Start of snippet'>anchor</a></sup>
 <!-- endSnippet -->
 
 ::: tip
@@ -477,8 +526,7 @@ The database management tools in Marten.CommandLine are able to work with the se
 document stores along with the default store from `AddMarten()`.
 :::
 
-Marten V5.0 introduces a new feature to register additional Marten databases into a .Net system. `AddMarten()` continues to work as it has, but we can now register and resolve additional store services. To utilize the type system and your application's underlying IoC container, the first step is to create a custom *marker* interface for your separate document store like this one below targeting
-a separate "invoicing" database:
+Marten V5.0 introduces a new feature to register additional Marten databases into a .Net system. `AddMarten()` continues to work as it has, but we can now register and resolve additional store services. To utilize the type system and your application's underlying IoC container, the first step is to create a custom *marker* interface for your separate document store like this one below targeting a separate "invoicing" database:
 
 <!-- snippet: sample_IInvoicingStore -->
 <a id='snippet-sample_iinvoicingstore'></a>

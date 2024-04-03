@@ -54,8 +54,10 @@ internal static class Program
                 opts.AutoCreateSchemaObjects = AutoCreate.All;
                 opts.DatabaseSchemaName = "cli";
 
-                opts.MultiTenantedWithSingleServer(ConnectionSource.ConnectionString)
-                    .WithTenants("tenant1", "tenant2", "tenant3");
+                opts.MultiTenantedWithSingleServer(
+                    ConnectionSource.ConnectionString,
+                    t => t.WithTenants("tenant1", "tenant2", "tenant3")
+                );
             });
         });
     }
@@ -80,7 +82,7 @@ internal class Publisher
 
     public Task Start()
     {
-        var random = new Random();
+        var random = Random.Shared;
         return Task.Run(async () =>
         {
             while (true)

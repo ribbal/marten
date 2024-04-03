@@ -6,6 +6,7 @@ using JasperFx.Core.Reflection;
 using Marten.Events;
 using Marten.Internal.Operations;
 using Marten.Services;
+using Marten.Storage;
 
 namespace Marten.Internal;
 
@@ -78,10 +79,13 @@ internal class UnitOfWork: ISessionWorkTracker
 
     IEnumerable<object> IUnitOfWork.Updates()
     {
+        var fromTrackers = _parent.ChangeTrackers
+            .Where(x => x.DetectChanges(_parent, out var _)).Select(x => x.Document);
+
         return _operations
             .OfType<IDocumentStorageOperation>()
             .Where(x => x.Role() == OperationRole.Update || x.Role() == OperationRole.Upsert)
-            .Select(x => x.Document);
+            .Select(x => x.Document).Union(fromTrackers);
     }
 
     IEnumerable<object> IUnitOfWork.Inserts()
@@ -210,6 +214,11 @@ internal class UnitOfWork: ISessionWorkTracker
         Streams.Clear();
     }
 
+    public void PurgeOperations<T, TId>(TId id) where T : notnull
+    {
+        _operations.RemoveAll(op => op is StorageOperation<T, TId> storage && storage.Id.Equals(id));
+    }
+
     public bool TryFindStream(string streamKey, out StreamAction stream)
     {
         stream = Streams
@@ -234,7 +243,7 @@ internal class UnitOfWork: ISessionWorkTracker
             return false;
         }
 
-        if (_operations.Select(x => x.DocumentType).Distinct().Count() == 1)
+        if (_operations.Where(x => x.Role() != OperationRole.Other).Select(x => x.DocumentType).Distinct().Count(x => x != typeof(StorageFeatures)) == 1)
         {
             return false;
         }

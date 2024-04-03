@@ -214,12 +214,15 @@ public class StorageFeatures: IFeatureSchema
     {
         var duplicates =
             AllDocumentMappings.Where(x => !x.StructuralTyped)
-                .GroupBy(x => x.Alias)
+                .GroupBy(x => $"{x.DatabaseSchemaName}.{x.Alias}")
                 .Where(x => x.Count() > 1)
                 .ToArray();
+
         if (duplicates.Any())
         {
-            var message = duplicates.Select(group =>
+            var message = duplicates
+                    // We are making it legal to use the same document alias across different schemas
+                .Select(group =>
             {
                 return
                     $"Document types {group.Select(x => x.DocumentType.FullName!).Join(", ")} all have the same document alias '{group.Key}'. You must explicitly make document type aliases to disambiguate the database schema objects";
@@ -261,6 +264,16 @@ public class StorageFeatures: IFeatureSchema
         SystemFunctions.AddSystemFunction(_options, "mt_grams_vector", "text");
         SystemFunctions.AddSystemFunction(_options, "mt_grams_query", "text");
         SystemFunctions.AddSystemFunction(_options, "mt_grams_array", "text");
+        SystemFunctions.AddSystemFunction(_options, "mt_jsonb_append", "jsonb,text[],jsonb,boolean");
+        SystemFunctions.AddSystemFunction(_options, "mt_jsonb_copy", "jsonb,text[],text[]");
+        SystemFunctions.AddSystemFunction(_options, "mt_jsonb_duplicate", "jsonb,text[],jsonb");
+        SystemFunctions.AddSystemFunction(_options, "mt_jsonb_fix_null_parent", "jsonb,text[]");
+        SystemFunctions.AddSystemFunction(_options, "mt_jsonb_increment", "jsonb,text[],numeric");
+        SystemFunctions.AddSystemFunction(_options, "mt_jsonb_insert", "jsonb,text[],jsonb,integer,boolean");
+        SystemFunctions.AddSystemFunction(_options, "mt_jsonb_move", "jsonb,text[],text");
+        SystemFunctions.AddSystemFunction(_options, "mt_jsonb_path_to_array", "text,char(1)");
+        SystemFunctions.AddSystemFunction(_options, "mt_jsonb_remove", "jsonb,text[],jsonb");
+        SystemFunctions.AddSystemFunction(_options, "mt_jsonb_patch", "jsonb,jsonb");
 
         Add(SystemFunctions);
 

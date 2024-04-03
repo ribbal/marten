@@ -3,7 +3,9 @@ using System.Data;
 using System.Linq;
 using System.Threading.Tasks;
 using JasperFx.CodeGeneration;
+using JasperFx.Core;
 using Marten;
+using Marten.Internal.Sessions;
 using Marten.Services;
 using Marten.Storage;
 using Marten.Testing.Harness;
@@ -145,19 +147,6 @@ public class SessionOptionsTests: OneOffConfigurationsContext
     }
 
     [Fact]
-    public async Task should_map_exception_correctly_for_invalid_connection_string()
-    {
-        var store = DocumentStore.For("***");
-        await using var session = store.LightweightSession();
-
-        var e = await Assert.ThrowsAsync<Marten.Exceptions.InvalidConnectionStringException>(() =>
-            session.QueryAsync<int>("select count(*) from mt_doc_foo")
-        );
-
-        Assert.Contains("Invalid connection string", e.Message);
-    }
-
-    [Fact]
     public void default_timeout_should_be_npgsql_default_ie_30()
     {
         // TODO -- do this without the Preview command. Check against the session itself
@@ -184,13 +173,13 @@ public class SessionOptionsTests: OneOffConfigurationsContext
 
         using var query = theStore.QuerySession(options);
         var cmd = query.Query<FryGuy>().Explain();
+
         Assert.Equal(15, cmd.Command.CommandTimeout);
     }
 
     [Fact]
     public void can_define_custom_timeout_via_pgcstring()
     {
-        // TODO -- do this without the Preview command. Check against the session itself
         var connectionStringBuilder = new NpgsqlConnectionStringBuilder(ConnectionSource.ConnectionString);
 
         connectionStringBuilder.CommandTimeout = 1;
@@ -272,6 +261,33 @@ public class SessionOptionsTests: OneOffConfigurationsContext
         await query.SaveChangesAsync();
         var loadedObject = await query.LoadAsync<FryGuy>(testObject.Id);
         loadedObject.ShouldNotBeNull();
+    }
+
+    [Fact]
+    public void build_connection_by_default()
+    {
+        using var store = DocumentStore.For(ConnectionSource.ConnectionString);
+
+        var options = new SessionOptions{Timeout = 7};
+        options.Initialize(store, CommandRunnerMode.Transactional)
+            .ShouldBeOfType<AutoClosingLifetime>()
+            .CommandTimeout.ShouldBe(7);
+    }
+
+    [Fact]
+    public void build_connection_with_sticky_connections_enabled()
+    {
+        using var store = DocumentStore.For(opts =>
+        {
+            opts.Connection(ConnectionSource.ConnectionString);
+            opts.UseStickyConnectionLifetimes = true;
+        });
+
+        var options = new SessionOptions{Timeout = 2};
+        options.Initialize(store, CommandRunnerMode.Transactional)
+            .ShouldBeOfType<TransactionalConnection>()
+            .CommandTimeout.ShouldBe(2)
+            ;
     }
 
     public class FryGuy

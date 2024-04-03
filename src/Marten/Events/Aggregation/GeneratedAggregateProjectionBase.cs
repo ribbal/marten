@@ -8,6 +8,7 @@ using JasperFx.CodeGeneration;
 using JasperFx.Core.Reflection;
 using Marten.Events.CodeGeneration;
 using Marten.Events.Daemon;
+using Marten.Events.Daemon.Internals;
 using Marten.Events.Projections;
 using Marten.Schema;
 using Marten.Storage;
@@ -21,7 +22,6 @@ public abstract partial class GeneratedAggregateProjectionBase<T>: GeneratedProj
     internal readonly ApplyMethodCollection _applyMethods;
 
     internal readonly CreateMethodCollection _createMethods;
-    internal readonly CreateDefaultMethod _createDefaultMethod;
     private readonly string _inlineAggregationHandlerType;
     private readonly string _liveAggregationTypeName;
     internal readonly ShouldDeleteMethodCollection _shouldDeleteMethods;
@@ -37,7 +37,6 @@ public abstract partial class GeneratedAggregateProjectionBase<T>: GeneratedProj
     protected GeneratedAggregateProjectionBase(AggregationScope scope): base(typeof(T).NameInCode())
     {
         _createMethods = new CreateMethodCollection(GetType(), typeof(T));
-        _createDefaultMethod = new CreateDefaultMethod(GetType(), typeof(T));
         _applyMethods = new ApplyMethodCollection(GetType(), typeof(T));
         _shouldDeleteMethods = new ShouldDeleteMethodCollection(GetType(), typeof(T));
 
@@ -55,6 +54,11 @@ public abstract partial class GeneratedAggregateProjectionBase<T>: GeneratedProj
         _versioning = new AggregateVersioning<T>(scope);
 
         RegisterPublishedType(typeof(T));
+
+        if (typeof(T).TryGetAttribute<ProjectionVersionAttribute>(out var att))
+        {
+            ProjectionVersion = att.Version;
+        }
     }
 
     internal IList<Type> DeleteEvents { get; } = new List<Type>();

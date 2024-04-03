@@ -1,6 +1,7 @@
 #nullable enable
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Linq;
 using JasperFx.CodeGeneration;
 using JasperFx.Core.Reflection;
@@ -158,12 +159,3 @@ public abstract class MultiStreamProjection<TDoc, TId>: GeneratedAggregateProjec
     }
 }
 
-[Obsolete("Please switch to MultiStreamProjection<T> with the exact same syntax")]
-public abstract class MultiStreamAggregation<TDoc, TId>: MultiStreamProjection<TDoc, TId>
-{
-}
-
-[Obsolete("Please switch to MultiStreamProjection<T> with the exact same syntax")]
-public abstract class ViewProjection<TDoc, TId>: MultiStreamProjection<TDoc, TId>
-{
-}

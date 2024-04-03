@@ -67,21 +67,6 @@ public interface IMartenSession: IDisposable, IAsyncDisposable
     string NextTempTableName();
 
     /// <summary>
-    ///     Execute a single command against the database with this session's connection
-    /// </summary>
-    /// <param name="cmd"></param>
-    /// <returns></returns>
-    int Execute(NpgsqlCommand cmd);
-
-    /// <summary>
-    ///     Execute a single command against the database with this session's connection
-    /// </summary>
-    /// <param name="command"></param>
-    /// <param name="token"></param>
-    /// <returns></returns>
-    Task<int> ExecuteAsync(NpgsqlCommand command, CancellationToken token = new());
-
-    /// <summary>
     ///     Execute a single command against the database with this session's connection and return the results
     /// </summary>
     /// <param name="command"></param>

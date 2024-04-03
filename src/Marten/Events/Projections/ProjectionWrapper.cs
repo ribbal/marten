@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using JasperFx.Core.Reflection;
 using Marten.Events.Daemon;
+using Marten.Events.Daemon.Internals;
 using Marten.Storage;
 using Weasel.Postgresql.SqlGeneration;
 
@@ -41,7 +42,12 @@ internal class ProjectionWrapper: IProjectionSource
 
     IReadOnlyList<AsyncProjectionShard> IProjectionSource.AsyncProjectionShards(DocumentStore store)
     {
-        return new List<AsyncProjectionShard> { new(this, new ISqlFragment[0]) };
+        return new List<AsyncProjectionShard> { new(this)
+        {
+            EventTypes = ArraySegment<Type>.Empty,
+            StreamType = null,
+            IncludeArchivedEvents = false
+        } };
     }
 
     public ValueTask<EventRangeGroup> GroupEvents(DocumentStore store, IMartenDatabase daemonDatabase, EventRange range,
@@ -58,4 +64,10 @@ internal class ProjectionWrapper: IProjectionSource
             )
         );
     }
+
+    /// <summary>
+    /// Specify that this projection is a non 1 version of the original projection definition to opt
+    /// into Marten's parallel blue/green deployment of this projection.
+    /// </summary>
+    public uint ProjectionVersion { get; set; } = 1;
 }

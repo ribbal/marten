@@ -19,6 +19,7 @@ using Marten.Util;
 using Microsoft.Extensions.Logging.Abstractions;
 using NpgsqlTypes;
 using Weasel.Core;
+using Weasel.Postgresql;
 using static Marten.Events.EventMappingExtensions;
 
 namespace Marten.Events;
@@ -67,9 +68,15 @@ public partial class EventGraph: IEventStoreOptions, IReadOnlyEventStoreOptions,
 
     internal StoreOptions Options { get; }
 
-    internal DbObjectName Table => new(DatabaseSchemaName, "mt_events");
+    internal DbObjectName Table => new PostgresqlObjectName(DatabaseSchemaName, "mt_events");
 
     internal EventMetadataCollection Metadata { get; } = new();
+
+    /// <summary>
+    /// TimeProvider used for event timestamping metadata. Replace for controlling the timestamps
+    /// in testing
+    /// </summary>
+    public TimeProvider TimeProvider { get; set; } = TimeProvider.System;
 
     /// <summary>
     ///     Configure whether event streams are identified with Guid or strings
@@ -287,7 +294,7 @@ public partial class EventGraph: IEventStoreOptions, IReadOnlyEventStoreOptions,
 
         foreach (var mapping in _byEventName)
         {
-            if(mapping is null)
+            if (mapping is null)
                 continue;
             if (types.Contains(mapping.DocumentType))
             {
@@ -412,6 +419,11 @@ public partial class EventGraph: IEventStoreOptions, IReadOnlyEventStoreOptions,
         {
             // Ignore this
         }
+        catch (OperationCanceledException)
+        {
+            // Nothing, get out of here
+        }
+
         Dispose();
     }
 }

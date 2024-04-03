@@ -88,6 +88,22 @@ The configuration above creates an index like this:
 CREATE INDEX mt_doc_user_idx_first_namelast_name ON public.mt_doc_user USING btree (((data ->> 'FirstName'::text)), ((data ->> 'LastName'::text)))
 ```
 
+## Multi-Column Indexes <Badge type="tip" text="7.0" />
+
+You can specify multi-field computed indexes through anonymous types like so:
+
+<!-- snippet: sample_multi_column_index -->
+<a id='snippet-sample_multi_column_index'></a>
+```cs
+var store = DocumentStore.For(opts =>
+{
+    // This creates a single index against both FirstName and ListName
+    opts.Schema.For<User>().Index(x => new { x.FirstName, x.LastName });
+});
+```
+<sup><a href='https://github.com/JasperFx/marten/blob/master/src/DocumentDbTests/Indexes/computed_indexes.cs#L153-L161' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_multi_column_index' title='Start of snippet'>anchor</a></sup>
+<!-- endSnippet -->
+
 ## Customizing a Calculated Index
 
 You have some ability to customize the calculated index by passing a second Lambda `Action` into

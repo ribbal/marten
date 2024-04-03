@@ -5,9 +5,11 @@ using System.Threading;
 using System.Threading.Tasks;
 using Marten.AsyncDaemon.Testing.TestingSupport;
 using Marten.Events.Daemon;
+using Marten.Events.Daemon.Internals;
 using Marten.Events.Projections;
 using Marten.Linq.SqlGeneration;
 using Marten.Services;
+using Marten.Storage;
 using Marten.Testing.Harness;
 using NSubstitute;
 using Shouldly;
@@ -19,11 +21,11 @@ namespace Marten.AsyncDaemon.Testing;
 
 public class basic_async_daemon_tests: DaemonContext
 {
-    private readonly IShardAgent theAgent;
+    private readonly ISubscriptionAgent theAgent;
 
     public basic_async_daemon_tests(ITestOutputHelper output): base(output)
     {
-        theAgent = Substitute.For<IShardAgent>();
+        theAgent = Substitute.For<ISubscriptionAgent>();
         theAgent.Mode.Returns(ShardExecutionMode.Continuous);
     }
 
@@ -33,32 +35,65 @@ public class basic_async_daemon_tests: DaemonContext
         StoreOptions(x => x.Projections.Add(new TripProjectionWithCustomName(), ProjectionLifecycle.Async));
 
         using var daemon = await StartDaemon();
-        await daemon.StartAllShards();
+        await daemon.StartAllAsync();
 
         NumberOfStreams = 10;
         await PublishSingleThreaded();
 
         await daemon.Tracker.WaitForHighWaterMark(NumberOfEvents);
 
-        await daemon.StopAll();
+        await daemon.StopAllAsync();
 
 
         using var daemon2 = await StartDaemon();
         await daemon2.Tracker.WaitForHighWaterMark(NumberOfEvents);
 
-        await daemon2.StartAllShards();
+        await daemon2.StartAllAsync();
+    }
+
+    [Fact]
+    public async Task advance_to_latest_smoke_test()
+    {
+        StoreOptions(x => x.Projections.Add(new TripProjectionWithCustomName(), ProjectionLifecycle.Async));
+
+        using var daemon = await StartDaemon();
+        await daemon.StartAllAsync();
+
+        NumberOfStreams = 10;
+        await PublishSingleThreaded();
+
+        await daemon.Tracker.WaitForHighWaterMark(NumberOfEvents);
+
+        await daemon.StopAllAsync();
+
+        NumberOfStreams = 10;
+        await PublishSingleThreaded();
+
+        await theStore.Advanced.AdvanceHighWaterMarkToLatestAsync(CancellationToken.None);
+
     }
 
     #region sample_AsyncDaemonListener
 
     public class FakeListener: IChangeListener
     {
+        public List<IChangeSet> Befores = new();
         public IList<IChangeSet> Changes = new List<IChangeSet>();
 
         public Task AfterCommitAsync(IDocumentSession session, IChangeSet commit, CancellationToken token)
         {
             session.ShouldNotBeNull();
             Changes.Add(commit);
+            return Task.CompletedTask;
+        }
+
+        public Task BeforeCommitAsync(IDocumentSession session, IChangeSet commit, CancellationToken token)
+        {
+            session.ShouldNotBeNull();
+            Befores.Add(commit);
+
+            Changes.Count.ShouldBeLessThan(Befores.Count);
+
             return Task.CompletedTask;
         }
     }
@@ -80,15 +115,16 @@ public class basic_async_daemon_tests: DaemonContext
         #endregion
 
         using var daemon = await StartDaemon();
-        await daemon.StartAllShards();
+        await daemon.StartAllAsync();
 
         NumberOfStreams = 10;
         await PublishSingleThreaded();
 
         await daemon.Tracker.WaitForShardState("TripCustomName:All", NumberOfEvents);
 
-        await daemon.StopAll();
+        await daemon.StopAllAsync();
 
+        listener.Befores.Any().ShouldBeTrue();
         listener.Changes.Any().ShouldBeTrue();
     }
 
@@ -103,18 +139,18 @@ public class basic_async_daemon_tests: DaemonContext
         });
 
         using var daemon = await StartDaemon();
-        await daemon.StartAllShards();
+        await daemon.StartAllAsync();
 
         NumberOfStreams = 10;
         await PublishSingleThreaded();
 
         await daemon.Tracker.WaitForShardState("TripCustomName:All", NumberOfEvents);
 
-        await daemon.StopAll();
+        await daemon.StopAllAsync();
 
         listener.Changes.Clear(); // clear state before doing this again
 
-        await daemon.RebuildProjection<TripProjectionWithCustomName>(CancellationToken.None);
+        await daemon.RebuildProjectionAsync<TripProjectionWithCustomName>(CancellationToken.None);
 
         listener.Changes.Any().ShouldBeFalse();
     }
@@ -125,14 +161,14 @@ public class basic_async_daemon_tests: DaemonContext
         StoreOptions(x => x.Projections.Add(new TripProjectionWithCustomName(), ProjectionLifecycle.Async));
 
         using var daemon = await StartDaemon();
-        await daemon.StartAllShards();
+        await daemon.StartAllAsync();
 
         NumberOfStreams = 10;
         await PublishSingleThreaded();
 
         await daemon.Tracker.WaitForHighWaterMark(NumberOfEvents);
 
-        await daemon.StopShard("Trip:All");
+        await daemon.StopAgentAsync("Trip:All");
 
         daemon.StatusFor("Trip:All")
             .ShouldBe(AgentStatus.Stopped);
@@ -141,57 +177,22 @@ public class basic_async_daemon_tests: DaemonContext
     [Fact]
     public async Task event_fetcher_simple_case()
     {
-        using var fetcher =
-            new EventFetcher(theStore, theAgent, theStore.Tenancy.Default.Database, new ISqlFragment[0]);
+        var fetcher =
+            new EventLoader(theStore, (MartenDatabase)theStore.Tenancy.Default.Database, new AsyncOptions(), new ISqlFragment[0]);
 
         NumberOfStreams = 10;
         await PublishSingleThreaded();
 
         var shardName = new ShardName("name");
-        var range1 = new EventRange(shardName, 0, 10);
 
+        var range1 = await fetcher.LoadAsync(new EventRequest{Floor = 0, BatchSize = 10, HighWater = 10, Name = shardName, Runtime = new NulloDaemonRuntime()}, CancellationToken.None);
 
-        await fetcher.Load(range1, CancellationToken.None);
+        var range2 = await fetcher.LoadAsync(new EventRequest{Floor = 10, BatchSize = 10, HighWater = 20, Name = shardName, Runtime = new NulloDaemonRuntime()}, CancellationToken.None);
+        var range3 = await fetcher.LoadAsync(new EventRequest{Floor = 20, BatchSize = 10, HighWater = 38, Name = shardName, Runtime = new NulloDaemonRuntime()}, CancellationToken.None);
 
-        var range2 = new EventRange(shardName, 10, 20);
-        await fetcher.Load(range2, CancellationToken.None);
-
-        var range3 = new EventRange(shardName, 20, 38);
-        await fetcher.Load(range3, CancellationToken.None);
-
-        range1.Events.Count.ShouldBe(10);
-        range2.Events.Count.ShouldBe(10);
-        range3.Events.Count.ShouldBe(18);
-    }
-
-    [Fact]
-    public async Task use_type_filters()
-    {
-        NumberOfStreams = 10;
-        await PublishSingleThreaded();
-
-        using var fetcher1 =
-            new EventFetcher(theStore, theAgent, theStore.Tenancy.Default.Database, new ISqlFragment[0]);
-
-        var shardName = new ShardName("name");
-        var range1 = new EventRange(shardName, 0, NumberOfEvents);
-        await fetcher1.Load(range1, CancellationToken.None);
-
-        var uniqueTypeCount = range1.Events.Select(x => x.EventType).Distinct()
-            .Count();
-
-        uniqueTypeCount.ShouldBe(6);
-
-        var filter = new EventTypeFilter(theStore.Events, new Type[] { typeof(Travel), typeof(Arrival) });
-        using var fetcher2 = new EventFetcher(theStore, theAgent, theStore.Tenancy.Default.Database,
-            new ISqlFragment[] { filter });
-
-        var range2 = new EventRange(shardName, 0, NumberOfEvents);
-        await fetcher2.Load(range2, CancellationToken.None);
-        range2.Events
-            .Select(x => x.EventType)
-            .OrderBy(x => x.Name).Distinct()
-            .ShouldHaveTheSameElementsAs(typeof(Arrival), typeof(Travel));
+        range1.Count.ShouldBe(10);
+        range2.Count.ShouldBe(10);
+        range3.Count.ShouldBe(18);
     }
 
     [Fact]

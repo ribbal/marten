@@ -227,6 +227,33 @@ public class UserGroupsAssignmentProjection2: MultiStreamProjection<UserGroupsAs
 <sup><a href='https://github.com/JasperFx/marten/blob/master/src/EventSourcingTests/Projections/MultiStreamProjections/simple_multi_stream_projection.cs#L31-L53' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_view-projection-simple-2' title='Start of snippet'>anchor</a></sup>
 <!-- endSnippet -->
 
+As of Marten V7, you can also use `IEvent` metadata as part of creating the identity rules as shown in this example:
+
+<!-- snippet: sample_using_ievent_for_document_identity_in_projections -->
+<a id='snippet-sample_using_ievent_for_document_identity_in_projections'></a>
+```cs
+public class CustomerInsightsProjection : MultiStreamProjection<CustomerInsightsResponse, string>
+{
+
+    public CustomerInsightsProjection()
+    {
+        Identity<IEvent<CustomerCreated>>(x => DateOnly.FromDateTime(x.Timestamp.Date).ToString(CultureInfo.InvariantCulture));
+        Identity<IEvent<CustomerDeleted>>(x => DateOnly.FromDateTime(x.Timestamp.Date).ToString(CultureInfo.InvariantCulture));
+    }
+
+    public CustomerInsightsResponse Create(IEvent<CustomerCreated> @event)
+        => new(@event.Timestamp.Date.ToString(CultureInfo.InvariantCulture), DateOnly.FromDateTime(@event.Timestamp.DateTime), 1);
+
+    public CustomerInsightsResponse Apply(IEvent<CustomerCreated> @event, CustomerInsightsResponse current)
+        => current with { NewCustomers = current.NewCustomers + 1 };
+
+    public CustomerInsightsResponse Apply(IEvent<CustomerDeleted> @event, CustomerInsightsResponse current)
+        => current with { NewCustomers = current.NewCustomers - 1 };
+}
+```
+<sup><a href='https://github.com/JasperFx/marten/blob/master/src/EventSourcingTests/Bugs/Bug_2883_ievent_not_working_as_identity_source_in_multistream_projections.cs#L78-L98' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_using_ievent_for_document_identity_in_projections' title='Start of snippet'>anchor</a></sup>
+<!-- endSnippet -->
+
 ## Simple Example of Events Updating Multiple Views
 
 In the following projection, we apply the `MultipleUsersAssignedToGroup` event to multiple
@@ -402,7 +429,7 @@ create an aggregated view. As an example, a `Travel` event we use in Marten test
 public IList<Movement> Movements { get; set; } = new List<Movement>();
 public List<Stop> Stops { get; set; } = new();
 ```
-<sup><a href='https://github.com/JasperFx/marten/blob/master/src/Marten.AsyncDaemon.Testing/TestingSupport/Travel.cs#L39-L44' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_travel_movements' title='Start of snippet'>anchor</a></sup>
+<sup><a href='https://github.com/JasperFx/marten/blob/master/src/Marten.AsyncDaemon.Testing/TestingSupport/Travel.cs#L40-L45' title='Snippet source file'>snippet source</a> | <a href='#snippet-sample_travel_movements' title='Start of snippet'>anchor</a></sup>
 <!-- endSnippet -->
 
 In a sample `ViewProjection`, we do a "fan out" of the `Travel.Movements` members into separate events being processed through the projection:

@@ -108,7 +108,7 @@ public class ProjectionControllerTests: IProjectionHost
             source.ProjectionName.Returns(projectionName);
 
             source.Lifecycle.Returns(pair.Item2);
-            return new AsyncProjectionShard(identifier[1], source, Array.Empty<ISqlFragment>());
+            return new AsyncProjectionShard(identifier[1], source);
         }).ToList();
 
         store.Shards.Returns(shards);
@@ -139,6 +139,17 @@ public class ProjectionControllerTests: IProjectionHost
             new("Bar:All", ProjectionLifecycle.Inline));
 
         await theController.Execute(new ProjectionInput { ListFlag = true });
+
+        theView.Received().ListShards(store);
+    }
+
+    [Fact]
+    public async Task advance_to_latest_smoke_test()
+    {
+        var store = withStore("Marten", new("Foo:All", ProjectionLifecycle.Async),
+            new("Bar:All", ProjectionLifecycle.Inline));
+
+        await theController.Execute(new ProjectionInput { ListFlag = true, AdvanceFlag = true});
 
         theView.Received().ListShards(store);
     }

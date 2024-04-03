@@ -1,11 +1,11 @@
 #nullable enable
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Data.Common;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Text.Json;
 using JasperFx.CodeGeneration;
 using JasperFx.Core;
 using JasperFx.Core.Reflection;
@@ -15,16 +15,21 @@ using Marten.Events.Projections;
 using Marten.Exceptions;
 using Marten.Internal;
 using Marten.Linq;
-using Marten.Linq.Fields;
 using Marten.Metadata;
 using Marten.Schema;
 using Marten.Schema.Identity.Sequences;
+using Marten.Services;
 using Marten.Services.Json;
 using Marten.Storage;
+using Marten.Util;
+using Microsoft.Extensions.Logging;
+using Newtonsoft.Json;
 using Npgsql;
+using Polly;
 using Weasel.Core;
 using Weasel.Core.Migrations;
 using Weasel.Postgresql;
+using Weasel.Postgresql.Connections;
 
 namespace Marten;
 
@@ -35,14 +40,28 @@ namespace Marten;
 /// </summary>
 public partial class StoreOptions: IReadOnlyStoreOptions, IMigrationLogger
 {
-    internal readonly List<Action<ISerializer>> SerializationConfigurations = new();
+    public const int DefaultTimeout = 5;
 
-    private readonly ConcurrentDictionary<Type, ConcurrentDictionary<string, ChildDocument>> _childDocs
-        = new();
+    internal static readonly Func<string, NpgsqlDataSourceBuilder> DefaultNpgsqlDataSourceBuilderFactory =
+        connectionString => new NpgsqlDataSourceBuilder(connectionString);
+
+    internal Func<string, NpgsqlDataSourceBuilder> NpgsqlDataSourceBuilderFactory
+    {
+        get => _npgsqlDataSourceBuilderFactory;
+        private set => _npgsqlDataSourceBuilderFactory = value;
+    }
+
+    internal INpgsqlDataSourceFactory NpgsqlDataSourceFactory
+    {
+        get => _npgsqlDataSourceFactory;
+        private set => _npgsqlDataSourceFactory = value;
+    }
+
+    internal readonly List<Action<ISerializer>> SerializationConfigurations = new();
 
     private readonly IList<IDocumentPolicy> _policies = new List<IDocumentPolicy>
     {
-        new VersionedPolicy(), new SoftDeletedPolicy(), new TrackedPolicy(), new TenancyPolicy()
+        new VersionedPolicy(), new SoftDeletedPolicy(), new TrackedPolicy(), new TenancyPolicy(), new ProjectionDocumentPolicy()
     };
 
     /// <summary>
@@ -61,13 +80,10 @@ public partial class StoreOptions: IReadOnlyStoreOptions, IMigrationLogger
     /// </summary>
     public readonly MartenRegistry Schema;
 
-    private ImHashMap<Type, IFieldMapping> _childFieldMappings = ImHashMap<Type, IFieldMapping>.Empty;
-
     private string _databaseSchemaName = SchemaConstants.DefaultSchema;
 
     private IMartenLogger _logger = new NulloMartenLogger();
 
-    private IRetryPolicy _retryPolicy = new NulloRetryPolicy();
     private ISerializer? _serializer;
 
     /// <summary>
@@ -78,59 +94,134 @@ public partial class StoreOptions: IReadOnlyStoreOptions, IMigrationLogger
 
     public StoreOptions()
     {
-        EventGraph = new EventGraph(this);
+        _eventGraph = new EventGraph(this);
         Schema = new MartenRegistry(this);
-        Storage = new StorageFeatures(this);
+        _storage = new StorageFeatures(this);
 
-        Providers = new ProviderGraph(this);
-        Advanced = new AdvancedOptions(this);
+        _providers = new ProviderGraph(this);
+        _advanced = new AdvancedOptions(this);
 
-        Projections = new ProjectionOptions(this);
+        _projections = new ProjectionOptions(this);
+
+        _linq = new LinqParsing(this);
+
+        // Default Polly setup
+        ResiliencePipeline = new ResiliencePipelineBuilder().AddMartenDefaults().Build();
+
+        // Add logging into our NpgsqlDataSource
+        NpgsqlDataSourceFactory = new DefaultNpgsqlDataSourceFactory(connectionString =>
+        {
+            var builder = new NpgsqlDataSourceBuilder(connectionString);
+            if (LogFactory != null)
+            {
+                builder.UseLoggerFactory(LogFactory);
+            }
+
+            return builder;
+        });
     }
 
-    internal IList<Type> CompiledQueryTypes { get; } = new List<Type>();
+    /// <summary>
+    /// Configure and override the Polly error handling policies for this DocumentStore
+    /// </summary>
+    /// <param name="configure"></param>
+    public void ConfigurePolly(Action<ResiliencePipelineBuilder> configure)
+    {
+        var builder = new ResiliencePipelineBuilder();
+        configure(builder);
+
+        ResiliencePipeline = builder.Build();
+    }
+
+    /// <summary>
+    /// Extend default error handling policies for this DocumentStore.
+    /// Any user supplied policies will take precedence over the default policies.
+    /// </summary>
+    public void ExtendPolly(Action<ResiliencePipelineBuilder> configure)
+    {
+        var builder = new ResiliencePipelineBuilder();
+        configure(builder);
+
+        ResiliencePipeline = builder.AddMartenDefaults().Build();
+    }
+
+    /// <summary>
+    /// Direct Marten to use the <= V6 behavior of keeping a connection open
+    /// in an IQuerySession or IDocumentSession upon first usage until the session
+    /// is disposed. In V7 and later, the default behavior is an aggressive "use and close"
+    /// policy that tries to close and released used database connections as soon as possible
+    /// Default is false
+    /// </summary>
+    public bool UseStickyConnectionLifetimes { get; set; } = false;
+
+    internal IList<Type> CompiledQueryTypes => _compiledQueryTypes;
+
+    /// <summary>
+    /// Polly policies for retries within Marten command execution
+    /// </summary>
+    internal ResiliencePipeline ResiliencePipeline { get; set; }
 
     /// <summary>
     ///     Advisory lock id is used by the ApplyChangesOnStartup() option to serialize access to making
     ///     schema changes from multiple application nodes
     /// </summary>
-    public int ApplyChangesLockId { get; set; } = 4004;
+    public int ApplyChangesLockId
+    {
+        get => _applyChangesLockId;
+        set => _applyChangesLockId = value;
+    }
 
     /// <summary>
     ///     Used internally by the MartenActivator
     /// </summary>
-    internal bool ShouldApplyChangesOnStartup { get; set; } = false;
+    internal bool ShouldApplyChangesOnStartup
+    {
+        get => _shouldApplyChangesOnStartup;
+        set => _shouldApplyChangesOnStartup = value;
+    }
 
     /// <summary>
     ///     Used internally by the MartenActivator
     /// </summary>
-    internal bool ShouldAssertDatabaseMatchesConfigurationOnStartup { get; set; } = false;
+    internal bool ShouldAssertDatabaseMatchesConfigurationOnStartup
+    {
+        get => _shouldAssertDatabaseMatchesConfigurationOnStartup;
+        set => _shouldAssertDatabaseMatchesConfigurationOnStartup = value;
+    }
 
     /// <summary>
     ///     Configuration for all event store projections
     /// </summary>
-    public ProjectionOptions Projections { get; }
+    public ProjectionOptions Projections => _projections;
 
     /// <summary>
     ///     Direct Marten to either generate code at runtime (Dynamic), or attempt to load types from the entry assembly
     /// </summary>
-    public TypeLoadMode GeneratedCodeMode { get; set; } = TypeLoadMode.Dynamic;
+    public TypeLoadMode GeneratedCodeMode
+    {
+        get => _generatedCodeMode;
+        set => _generatedCodeMode = value;
+    }
 
     /// <summary>
     ///     Access to adding custom schema features to this Marten-enabled Postgresql database
     /// </summary>
-    public StorageFeatures Storage { get; }
+    public StorageFeatures Storage => _storage;
 
-    internal Action<IDatabaseCreationExpressions>? CreateDatabases { get; set; }
+    internal Action<IDatabaseCreationExpressions>? CreateDatabases
+    {
+        get => _createDatabases;
+        set => _createDatabases = value;
+    }
 
-    internal IProviderGraph Providers { get; }
+    internal IProviderGraph Providers => _providers;
 
     /// <summary>
     ///     Advanced configuration options for this DocumentStore
     /// </summary>
-    public AdvancedOptions Advanced { get; }
+    public AdvancedOptions Advanced => _advanced;
 
-    internal EventGraph EventGraph { get; }
+    internal EventGraph EventGraph => _eventGraph;
 
     /// <summary>
     ///     Configuration of event streams and projections
@@ -140,7 +231,7 @@ public partial class StoreOptions: IReadOnlyStoreOptions, IMigrationLogger
     /// <summary>
     ///     Extension point to add custom Linq query parsers
     /// </summary>
-    public LinqParsing Linq { get; } = new();
+    public LinqParsing Linq => _linq;
 
     /// <summary>
     ///     Apply conventional policies to how documents are mapped
@@ -191,7 +282,11 @@ public partial class StoreOptions: IReadOnlyStoreOptions, IMigrationLogger
     ///     Sets the batch size for updating or deleting documents in IDocumentSession.SaveChanges() /
     ///     IUnitOfWork.ApplyChanges()
     /// </summary>
-    public int UpdateBatchSize { get; set; } = 500;
+    public int UpdateBatchSize
+    {
+        get => _updateBatchSize;
+        set => _updateBatchSize = value;
+    }
 
     /// <summary>
     ///     Retrieve the currently configured serializer
@@ -220,15 +315,6 @@ public partial class StoreOptions: IReadOnlyStoreOptions, IMigrationLogger
         return _logger ?? new NulloMartenLogger();
     }
 
-    /// <summary>
-    ///     Retrieve the current retry policy for this DocumentStore
-    /// </summary>
-    /// <returns></returns>
-    public IRetryPolicy RetryPolicy()
-    {
-        return _retryPolicy ?? new NulloRetryPolicy();
-    }
-
     IReadOnlyList<IDocumentType> IReadOnlyStoreOptions.AllKnownDocumentTypes()
     {
         return Storage.AllDocumentMappings.OfType<IDocumentType>().ToList();
@@ -240,14 +326,56 @@ public partial class StoreOptions: IReadOnlyStoreOptions, IMigrationLogger
         return (Storage.FindMapping(documentType).Root as IDocumentType)!;
     }
 
+    void IReadOnlyStoreOptions.AssertDocumentTypeIsSoftDeleted(Type documentType)
+    {
+        var mapping = Storage.FindMapping(documentType) as IDocumentMapping;
+        if (mapping is null || mapping.DeleteStyle == DeleteStyle.Remove)
+        {
+            throw new InvalidOperationException(
+                $"Document type {documentType.FullNameInCode()} is not configured as soft deleted");
+        }
+    }
+
     /// <summary>
     ///     Get or set the tenancy model for this DocumentStore
     /// </summary>
-    public ITenancy Tenancy { get; set; } = null!;
+    public ITenancy Tenancy
+    {
+        get => (_tenancy ?? throw new InvalidOperationException(
+                "No tenancy is configured! Ensure that you provided connection string in `AddMarten` method or called `UseNpgsqlDataSource`"))
+            .Value;
+        set => _tenancy = new Lazy<ITenancy>(() => value);
+    }
+
+    private Lazy<ITenancy>? _tenancy;
+    private Func<string, NpgsqlDataSourceBuilder> _npgsqlDataSourceBuilderFactory = DefaultNpgsqlDataSourceBuilderFactory;
+    private INpgsqlDataSourceFactory _npgsqlDataSourceFactory;
+    private readonly IList<Type> _compiledQueryTypes = new List<Type>();
+    private int _applyChangesLockId = 4004;
+    private bool _shouldApplyChangesOnStartup = false;
+    private bool _shouldAssertDatabaseMatchesConfigurationOnStartup = false;
+    private readonly ProjectionOptions _projections;
+    private TypeLoadMode _generatedCodeMode = TypeLoadMode.Dynamic;
+    private readonly StorageFeatures _storage;
+    private Action<IDatabaseCreationExpressions>? _createDatabases;
+    private readonly IProviderGraph _providers;
+    private readonly AdvancedOptions _advanced;
+    private readonly EventGraph _eventGraph;
+    private readonly LinqParsing _linq;
+    private int _updateBatchSize = 500;
 
     IReadOnlyEventStoreOptions IReadOnlyStoreOptions.Events => EventGraph;
 
     IReadOnlyLinqParsing IReadOnlyStoreOptions.Linq => Linq;
+
+    public int CommandTimeout { get; set; } = DefaultTimeout;
+
+    // This is used to move logging into the >v7 async daemon
+    internal ILoggerFactory? LogFactory { get; set; }
+
+    // This is used mostly for testing to provide *some* sort of logging
+    // within the async daemon
+    internal ILogger? DotNetLogger { get; set; }
 
     /// <summary>
     ///     Configure Marten to create databases for tenants in case databases do not exist or need to be dropped & re-created.
@@ -259,6 +387,18 @@ public partial class StoreOptions: IReadOnlyStoreOptions, IMigrationLogger
         CreateDatabases = configure ?? throw new ArgumentNullException(nameof(configure));
     }
 
+    /// <summary>
+    ///     Sets custom `NpgsqlDataSource` factory to manage database connections
+    /// </summary>
+    /// <param name="dataSourceFactory"></param>
+    /// <param name="connectionString"></param>
+    public void DataSourceFactory(INpgsqlDataSourceFactory dataSourceFactory, string? connectionString = null)
+    {
+        NpgsqlDataSourceFactory = dataSourceFactory;
+
+        if (_tenancy == null && connectionString != null)
+            Connection(connectionString);
+    }
 
     /// <summary>
     ///     Supply the connection string to the Postgresql database
@@ -266,16 +406,30 @@ public partial class StoreOptions: IReadOnlyStoreOptions, IMigrationLogger
     /// <param name="connectionString"></param>
     public void Connection(string connectionString)
     {
-        Tenancy = new DefaultTenancy(new ConnectionFactory(connectionString), this);
+        try
+        {
+            var builder = new NpgsqlConnectionStringBuilder(connectionString);
+
+            if (builder.CommandTimeout > 0) CommandTimeout = builder.CommandTimeout;
+        }
+        catch (Exception)
+        {
+            // Just swallow this one
+        }
+
+        _tenancy = new Lazy<ITenancy>(() =>
+            new DefaultTenancy(NpgsqlDataSourceFactory.Create(connectionString), this));
     }
 
     /// <summary>
     ///     Supply a source for the connection string to a Postgresql database
     /// </summary>
     /// <param name="connectionSource"></param>
+    [Obsolete("Use version with connection string. This will be removed in Marten 8")]
     public void Connection(Func<string> connectionSource)
     {
-        Tenancy = new DefaultTenancy(new ConnectionFactory(connectionSource), this);
+        throw new NotSupportedException(
+            "Sorry, but this feature is no longer supported. Please use the overload that uses NpgsqlDataSource instead for similar functionality");
     }
 
     /// <summary>
@@ -283,9 +437,46 @@ public partial class StoreOptions: IReadOnlyStoreOptions, IMigrationLogger
     ///     the Postgresql database
     /// </summary>
     /// <param name="source"></param>
+    [Obsolete("Use one of the overloads that takes a connection string, an NpgsqlDataSource, or an INpgsqlDataSourceFactory. This will be removed in Marten 8")]
     public void Connection(Func<NpgsqlConnection> source)
     {
-        Tenancy = new DefaultTenancy(new LambdaConnectionFactory(source), this);
+        throw new NotSupportedException(
+            "Use one of the overloads that takes a connection string, an NpgsqlDataSource, or an INpgsqlDataSourceFactory");
+    }
+
+
+    /// <summary>
+    ///     Supply a mechanism for resolving an NpgsqlConnection object based on the NpgsqlDataSource
+    /// </summary>
+    /// <remarks>
+    ///     When doing that you need to handle data source disposal.
+    /// </remarks>
+    /// <param name="dataSource"></param>
+    public void Connection(NpgsqlDataSource dataSource) =>
+        DataSourceFactory(
+            new SingleNpgsqlDataSourceFactory(
+                NpgsqlDataSourceBuilderFactory,
+                dataSource
+            ),
+            dataSource.ConnectionString
+        );
+
+    /// <summary>
+    ///     Supply a mechanism for resolving an NpgsqlConnection object based on the NpgsqlDataSource
+    /// </summary>
+    /// <remarks>
+    ///     When doing that you need to handle data source disposal.
+    /// </remarks>
+    /// <param name="dataSourceBuilderFactory"></param>
+    /// <param name="dataSource"></param>
+    public void Connection(
+        Func<string, NpgsqlDataSourceBuilder> dataSourceBuilderFactory,
+        NpgsqlDataSource dataSource
+    )
+    {
+        NpgsqlDataSourceBuilderFactory = dataSourceBuilderFactory;
+
+        Connection(dataSource);
     }
 
     /// <summary>
@@ -311,6 +502,7 @@ public partial class StoreOptions: IReadOnlyStoreOptions, IMigrationLogger
     /// <param name="casing">Casing style to be used in serialization</param>
     /// <param name="collectionStorage">Allow to set collection storage as raw arrays (without explicit types)</param>
     /// <param name="nonPublicMembersStorage">Allow non public members to be used during deserialization</param>
+    [Obsolete("Prefer UseNewtonsoftForSerialization or UseSystemTextJsonForSerialization to configure JSON options")]
     public void UseDefaultSerialization(
         EnumStorage enumStorage = EnumStorage.AsInteger,
         Casing casing = Casing.Default,
@@ -327,6 +519,52 @@ public partial class StoreOptions: IReadOnlyStoreOptions, IMigrationLogger
                 CollectionStorage = collectionStorage,
                 NonPublicMembersStorage = nonPublicMembersStorage
             });
+
+        Serializer(serializer);
+    }
+
+    /// <summary>
+    ///     Configure the Newtonsoft serializer settings
+    /// </summary>
+    /// <param name="enumStorage">Enum storage style</param>
+    /// <param name="casing">Casing style to be used in serialization</param>
+    /// <param name="collectionStorage">Allow to set collection storage as raw arrays (without explicit types)</param>
+    /// <param name="nonPublicMembersStorage">Allow non public members to be used during deserialization</param>
+    public void UseNewtonsoftForSerialization(
+        EnumStorage enumStorage = EnumStorage.AsInteger,
+        Casing casing = Casing.Default,
+        CollectionStorage collectionStorage = CollectionStorage.Default,
+        NonPublicMembersStorage nonPublicMembersStorage = NonPublicMembersStorage.Default,
+        Action<JsonSerializerSettings>? configure = null)
+    {
+        var serializer = new JsonNetSerializer
+        {
+            EnumStorage = enumStorage,
+            Casing = casing,
+            CollectionStorage = collectionStorage,
+            NonPublicMembersStorage = nonPublicMembersStorage
+        };
+
+        if (configure is not null)
+            serializer.Configure(configure);
+
+        Serializer(serializer);
+    }
+
+    /// <summary>
+    ///     Configure the System.Text.Json serializer settings
+    /// </summary>
+    /// <param name="enumStorage">Enum storage style</param>
+    /// <param name="casing">Casing style to be used in serialization</param>
+    public void UseSystemTextJsonForSerialization(
+        EnumStorage enumStorage = EnumStorage.AsInteger,
+        Casing casing = Casing.Default,
+        Action<JsonSerializerOptions>? configure = null)
+    {
+        var serializer = new SystemTextJsonSerializer() { EnumStorage = enumStorage, Casing = casing, };
+
+        if(configure is not null)
+            serializer.Configure(configure);
 
         Serializer(serializer);
     }
@@ -351,15 +589,6 @@ public partial class StoreOptions: IReadOnlyStoreOptions, IMigrationLogger
     public void Logger(IMartenLogger logger)
     {
         _logger = logger;
-    }
-
-    /// <summary>
-    ///     Replace the Marten retry policy
-    /// </summary>
-    /// <param name="retryPolicy"></param>
-    public void RetryPolicy(IRetryPolicy retryPolicy)
-    {
-        _retryPolicy = retryPolicy;
     }
 
     /// <summary>
@@ -438,25 +667,6 @@ public partial class StoreOptions: IReadOnlyStoreOptions, IMigrationLogger
     }
 
     /// <summary>
-    ///     These mappings should only be used for Linq querying within the SelectMany() body
-    /// </summary>
-    /// <param name="type"></param>
-    /// <returns></returns>
-    internal IFieldMapping ChildTypeMappingFor(Type type)
-    {
-        if (_childFieldMappings.TryFind(type, out var mapping))
-        {
-            return mapping;
-        }
-
-        mapping = new FieldMapping("d.data", type, this);
-
-        _childFieldMappings = _childFieldMappings.AddOrUpdate(type, mapping);
-
-        return mapping;
-    }
-
-    /// <summary>
     ///     Meant for testing scenarios to "help" .Net understand where the IHostEnvironment for the
     ///     Host. You may have to specify the relative path to the entry project folder from the AppContext.BaseDirectory
     /// </summary>
@@ -506,13 +716,26 @@ public partial class StoreOptions: IReadOnlyStoreOptions, IMigrationLogger
     /// </summary>
     /// <param name="masterConnectionString"></param>
     /// <returns></returns>
-    public ISingleServerMultiTenancy MultiTenantedWithSingleServer(string masterConnectionString)
+    public void MultiTenantedWithSingleServer(
+        string masterConnectionString,
+        Action<ISingleServerMultiTenancy>? configure = null
+    )
     {
         Advanced.DefaultTenantUsageEnabled = false;
-        var tenancy = new SingleServerMultiTenancy(masterConnectionString, this);
-        Tenancy = tenancy;
 
-        return tenancy;
+        _tenancy = new Lazy<ITenancy>(() =>
+        {
+            var tenancy =
+                new SingleServerMultiTenancy(
+                    NpgsqlDataSourceFactory,
+                    masterConnectionString,
+                    this
+                );
+
+            configure?.Invoke(tenancy);
+
+            return tenancy;
+        });
     }
 
     /// <summary>
@@ -524,10 +747,15 @@ public partial class StoreOptions: IReadOnlyStoreOptions, IMigrationLogger
     public void MultiTenantedDatabases(Action<IStaticMultiTenancy> configure)
     {
         Advanced.DefaultTenantUsageEnabled = false;
-        var tenancy = new StaticMultiTenancy(this);
-        Tenancy = tenancy;
 
-        configure(tenancy);
+        _tenancy = new Lazy<ITenancy>(() =>
+        {
+            var tenancy = new StaticMultiTenancy(NpgsqlDataSourceFactory, this);
+
+            configure(tenancy);
+
+            return tenancy;
+        });
     }
 
     public class PoliciesExpression
@@ -617,6 +845,40 @@ public partial class StoreOptions: IReadOnlyStoreOptions, IMigrationLogger
                 x.UseOptimisticConcurrency = true;
             });
         }
+    }
+
+    /// <summary>
+    /// Multi-tenancy strategy where the tenant database connection strings are defined in a table
+    /// named "mt_tenant_databases"
+    /// </summary>
+    /// <param name="connectionString">A connection string to the database that will hold the tenant database lookup table </param>
+    /// <param name="schemaName">If specified, override the schema name where the tenant database lookup table wil be</param>
+    public void MultiTenantedDatabasesWithMasterDatabaseTable(string connectionString, string? schemaName = "public")
+    {
+        var tenancy = new MasterTableTenancy(this, connectionString, schemaName);
+        Advanced.DefaultTenantUsageEnabled = false;
+        Tenancy = tenancy;
+    }
+
+    /// <summary>
+    /// Multi-tenancy strategy where the tenant database connection strings are defined in a table
+    /// named "mt_tenant_databases"
+    /// </summary>
+    /// <param name="configure"></param>
+    public void MultiTenantedDatabasesWithMasterDatabaseTable(Action<MasterTableTenancyOptions> configure)
+    {
+        var configuration = new MasterTableTenancyOptions();
+        configure(configuration);
+
+        if (configuration.ConnectionString.IsEmpty())
+        {
+            throw new ArgumentOutOfRangeException(nameof(configure),
+                $"{nameof(MasterTableTenancyOptions.ConnectionString)} must be supplied");
+        }
+
+        var tenancy = new MasterTableTenancy(this, configuration);
+        Advanced.DefaultTenantUsageEnabled = false;
+        Tenancy = tenancy;
     }
 }
 

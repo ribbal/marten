@@ -38,8 +38,11 @@ public class ProjectionInput: MartenInput
     public string TenantFlag { get; set; }
 
     [Description("If specified, use this shard timeout value for daemon")]
-    [FlagAlias("shard-timeout", 't')]
+    [FlagAlias("shard-timeout", longAliasOnly: true)]
     public string ShardTimeoutFlag { get; set; }
+
+    [Description("If specified, advances the projection high water mark to the latest event sequence")]
+    public bool AdvanceFlag { get; set; }
 
     internal IList<AsyncProjectionShard> BuildShards(DocumentStore store)
     {

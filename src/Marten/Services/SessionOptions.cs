@@ -100,33 +100,39 @@ public sealed class SessionOptions
 
         if (OwnsConnection && OwnsTransactionLifecycle)
         {
-            var transaction = mode == CommandRunnerMode.ReadOnly
-                ? new ReadOnlyMartenControlledConnectionTransaction(this, store.Options)
-                : new MartenControlledConnectionTransaction(this, store.Options);
-
             if (IsolationLevel == IsolationLevel.Serializable)
             {
+                var transaction = mode == CommandRunnerMode.ReadOnly
+                    ? new ReadOnlyTransactionalConnection(this){CommandTimeout = Timeout ?? store.Options.CommandTimeout}
+                    : new TransactionalConnection(this){CommandTimeout = Timeout ?? store.Options.CommandTimeout};
                 transaction.BeginTransaction();
-            }
 
-            return transaction;
+                return transaction;
+            }
+            else if (store.Options.UseStickyConnectionLifetimes)
+            {
+                return new TransactionalConnection(this){CommandTimeout = Timeout ?? store.Options.CommandTimeout};
+            }
+            {
+                return new AutoClosingLifetime(this, store.Options);
+            }
         }
 
 
         if (Transaction != null)
         {
-            return new ExternalTransaction(this);
+            return new ExternalTransaction(this){CommandTimeout = Timeout ?? store.Options.CommandTimeout};
         }
 
 
         if (DotNetTransaction != null)
         {
-            return new AmbientTransactionLifetime(this);
+            return new AmbientTransactionLifetime(this){CommandTimeout = Timeout ?? store.Options.CommandTimeout};
         }
 
         if (Connection != null)
         {
-            return new MartenControlledConnectionTransaction(this, store.Options);
+            return new TransactionalConnection(this){CommandTimeout = Timeout ?? store.Options.CommandTimeout};
         }
 
 
@@ -155,8 +161,8 @@ public sealed class SessionOptions
         if (OwnsConnection && OwnsTransactionLifecycle)
         {
             var transaction = mode == CommandRunnerMode.ReadOnly
-                ? new ReadOnlyMartenControlledConnectionTransaction(this, store.Options)
-                : new MartenControlledConnectionTransaction(this, store.Options);
+                ? new ReadOnlyTransactionalConnection(this)
+                : new TransactionalConnection(this);
 
             if (IsolationLevel == IsolationLevel.Serializable)
             {

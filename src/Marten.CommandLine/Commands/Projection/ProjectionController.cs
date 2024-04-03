@@ -1,12 +1,14 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using JasperFx.Core;
 using Marten.Events.Daemon;
 using Marten.Events.Projections;
 using Marten.Storage;
 using Oakton.Internal.Conversion;
+using Spectre.Console;
 
 namespace Marten.CommandLine.Commands.Projection;
 
@@ -60,10 +62,14 @@ public class ProjectionController
 
         }
 
+        if (stores.First().Shards.IsEmpty())
+        {
+            AnsiConsole.MarkupLine("[bold]No projections are configured.[/]");
+            return true;
+        }
+
         foreach (var store in stores)
         {
-            if (store.Shards.IsEmpty()) break;
-
             var shards = FilterShards(input, store);
             if (shards.IsEmpty())
             {
@@ -91,6 +97,14 @@ public class ProjectionController
                 break;
             }
 
+            if (input.AdvanceFlag)
+            {
+                foreach (var database in databases)
+                {
+                    await database.AdvanceHighWaterMarkToLatestAsync(CancellationToken.None).ConfigureAwait(false);
+                }
+            }
+
             if (input.RebuildFlag)
             {
                 _view.WriteHeader(store);
@@ -101,15 +115,24 @@ public class ProjectionController
                         _view.WriteHeader(database);
                     }
 
-                    var status = await _host.TryRebuildShards(database, shards, shardTimeout).ConfigureAwait(false);
+                    try
+                    {
+                        var status = await _host.TryRebuildShards(database, shards, shardTimeout).ConfigureAwait(false);
 
-                    if (status == RebuildStatus.NoData)
-                    {
-                        _view.DisplayEmptyEventsMessage(store);
+                        if (status == RebuildStatus.NoData)
+                        {
+                            _view.DisplayEmptyEventsMessage(store);
+                        }
+                        else
+                        {
+                            _view.DisplayRebuildIsComplete();
+                        }
                     }
-                    else
+                    catch (Exception)
                     {
-                        _view.DisplayRebuildIsComplete();
+                        AnsiConsole.MarkupLine("[red]Errors detected[/]");
+
+                        return false;
                     }
                 }
             }

@@ -1,13 +1,34 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Linq;
 using JasperFx.Core;
 using JasperFx.Core.Reflection;
 using Marten.Events.Aggregation;
 using Marten.Events.Daemon;
+using Marten.Events.Fetching;
 using Marten.Exceptions;
 
 namespace Marten.Events.Projections;
+
+public class ErrorHandlingOptions
+{
+    /// <summary>
+    /// Should the daemon skip any "poison pill" events that fail in user projection code?
+    /// </summary>
+    public bool SkipApplyErrors { get; set; }
+
+    /// <summary>
+    /// Should the daemon skip any unknown event types encountered when trying to
+    /// fetch events?
+    /// </summary>
+    public bool SkipUnknownEvents { get; set; }
+
+    /// <summary>
+    /// Should the daemon skip any events that experience serialization errors?
+    /// </summary>
+    public bool SkipSerializationErrors { get; set; }
+}
 
 /// <summary>
 ///     Used to register projections with Marten
@@ -20,17 +41,49 @@ public class ProjectionOptions: DaemonSettings
     private Lazy<Dictionary<string, AsyncProjectionShard>> _asyncShards;
     private ImHashMap<Type, object> _liveAggregators = ImHashMap<Type, object>.Empty;
 
+    internal readonly IFetchPlanner[] _builtInPlanners = [new InlineFetchPlanner(), new AsyncFetchPlanner(), new LiveFetchPlanner()];
+
     internal ProjectionOptions(StoreOptions options)
     {
         _options = options;
     }
 
-    internal IList<IProjectionSource> All { get; } = new List<IProjectionSource>();
+    /// <summary>
+    /// Async daemon error handling policies while running in a rebuild mode. The defaults
+    /// are to *not* skip any errors
+    /// </summary>
+    public ErrorHandlingOptions RebuildErrors { get; } = new();
 
-    internal IList<AsyncProjectionShard> BuildAllShards(DocumentStore store)
+    /// <summary>
+    /// Async daemon error handling polices while running continuously. The defaults
+    /// are to skip serialization errors, unknown events, and apply errors
+    /// </summary>
+    public ErrorHandlingOptions Errors { get; } = new()
     {
-        return All.SelectMany(x => x.AsyncProjectionShards(store)).ToList();
+        SkipApplyErrors = true,
+        SkipSerializationErrors = true,
+        SkipUnknownEvents = true
+    };
+
+    internal IEnumerable<IFetchPlanner> allPlanners()
+    {
+        foreach (var planner in FetchPlanners)
+        {
+            yield return planner;
+        }
+
+        foreach (var planner in _builtInPlanners)
+        {
+            yield return planner;
+        }
     }
+
+    /// <summary>
+    /// Any custom or extended IFetchPlanner strategies for customizing FetchForWriting() behavior
+    /// </summary>
+    public List<IFetchPlanner> FetchPlanners { get; } = new();
+
+    internal IList<IProjectionSource> All { get; } = new List<IProjectionSource>();
 
     internal bool DoesPersistAggregate(Type aggregateType)
     {
@@ -48,6 +101,12 @@ public class ProjectionOptions: DaemonSettings
         foreach (var kv in _liveAggregators.Enumerate()) yield return kv.Key;
 
         foreach (var projection in All.OfType<IAggregateProjection>()) yield return projection.AggregateType;
+    }
+
+    public bool TryFindAggregate(Type documentType, out IAggregateProjection projection)
+    {
+        projection = All.OfType<IAggregateProjection>().FirstOrDefault(x => x.AggregateType == documentType);
+        return projection != null;
     }
 
     internal IProjection[] BuildInlineProjections(DocumentStore store)
@@ -141,27 +200,6 @@ public class ProjectionOptions: DaemonSettings
         All.Add(projection);
     }
 
-
-    // Note: recent one
-    /// <summary>
-    /// Register Snapshot or Live Stream aggregation for entity of type T.
-    /// </summary>
-    /// <typeparam name="T"></typeparam>
-    /// <param name="lifecycle">Override the aggregate lifecycle. The default is Inline</param>
-    /// <param name="asyncConfiguration">
-    ///     Optional configuration including teardown instructions for the usage of this
-    ///     projection within the async projection daempon
-    /// </param>
-    /// <returns>The extended storage configuration for document T</returns>
-    [Obsolete(
-        "Please switch to Snapshot (in case of inline or async lifecycle) or LiveStreamAggregation method (for online lifecycle).")]
-    public MartenRegistry.DocumentMappingExpression<T> SelfAggregate<T>(
-        ProjectionLifecycle lifecycle,
-        Action<AsyncOptions> asyncConfiguration = null
-    ) =>
-        lifecycle == ProjectionLifecycle.Live
-            ? LiveStreamAggregation<T>(asyncConfiguration)
-            : Snapshot<T>(lifecycle.Map(), asyncConfiguration);
 
     /// <summary>
     /// Register live stream aggregation. It's needed for pre-building generated types
@@ -352,7 +390,8 @@ public class ProjectionOptions: DaemonSettings
         }
     }
 
-    internal IReadOnlyList<AsyncProjectionShard> AllShards()
+    // This has to be public for CritterStackPro
+    public IReadOnlyList<AsyncProjectionShard> AllShards()
     {
         return _asyncShards.Value.Values.ToList();
     }

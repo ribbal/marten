@@ -2,16 +2,11 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
-using System.Linq;
-using Marten.Events.Daemon;
-using Weasel.Postgresql.SqlGeneration;
 
 namespace Marten.Events.Projections;
 
 public abstract class ProjectionBase
 {
-    private readonly List<ISqlFragment> _filters = new();
-
     private readonly List<Type> _publishedTypes = new();
 
     /// <summary>
@@ -19,6 +14,12 @@ public abstract class ProjectionBase
     /// </summary>
     [DisallowNull]
     public string? ProjectionName { get; set; }
+
+    /// <summary>
+    /// Specify that this projection is a non 1 version of the original projection definition to opt
+    /// into Marten's parallel blue/green deployment of this projection.
+    /// </summary>
+    public uint ProjectionVersion { get; set; } = 1;
 
     /// <summary>
     ///     The projection lifecycle that governs when this projection is executed
@@ -48,27 +49,6 @@ public abstract class ProjectionBase
     ///     step to rebuilding the projection data. The default is false.
     /// </summary>
     public bool TeardownDataOnRebuild { get; set; } = false;
-
-
-    internal ISqlFragment[] BuildFilters(DocumentStore store)
-    {
-        return buildFilters(store).ToArray();
-    }
-
-    private IEnumerable<ISqlFragment> buildFilters(DocumentStore store)
-    {
-        if (IncludedEventTypes.Any() && !IncludedEventTypes.Any(x => x.IsAbstract || x.IsInterface))
-        {
-            yield return new EventTypeFilter(store.Options.EventGraph, IncludedEventTypes);
-        }
-
-        if (StreamType != null)
-        {
-            yield return new AggregateTypeFilter(StreamType, store.Options.EventGraph);
-        }
-
-        foreach (var filter in _filters) yield return filter;
-    }
 
     /// <summary>
     ///     Short hand syntax to tell Marten that this projection takes in the event type T

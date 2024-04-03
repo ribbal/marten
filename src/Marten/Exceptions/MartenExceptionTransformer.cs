@@ -6,7 +6,13 @@ using Npgsql;
 namespace Marten.Exceptions;
 #nullable enable
 
-[Obsolete("Replace w/ JasperFx.Core version")]
+public class MissingGinExtensionException: MartenException
+{
+    public MissingGinExtensionException(Exception? innerException) : base("Unable to create GIN/GIST index. See https://stackoverflow.com/questions/32138996/why-error-occurred-while-creating-gin-index for a possible remedy", innerException)
+    {
+    }
+}
+
 internal static class MartenExceptionTransformer
 {
     static MartenExceptionTransformer()
@@ -20,6 +26,10 @@ internal static class MartenExceptionTransformer
         Transforms.IfExceptionIs<PostgresException>()
             .If(e => e.SqlState == PostgresErrorCodes.SerializationFailure)
             .ThenTransformTo(e => throw new ConcurrentUpdateException(e));
+
+        Transforms.IfExceptionIs<PostgresException>()
+            .If(e => e.ErrorCode == 42704)
+            .ThenTransformTo(e => throw new MissingGinExtensionException(e));
 
         Transforms.IfExceptionIs<NpgsqlException>()
             .TransformTo(e =>
@@ -50,6 +60,16 @@ internal static class MartenExceptionTransformer
 
     internal static void WrapAndThrow(Exception exception)
     {
+        Transforms.TransformAndThrow(exception);
+    }
+
+    public static void WrapAndThrow(NpgsqlBatch batch, Exception exception)
+    {
+        if (batch != null)
+        {
+            exception.Data[nameof(NpgsqlBatch)] = batch;
+        }
+
         Transforms.TransformAndThrow(exception);
     }
 }

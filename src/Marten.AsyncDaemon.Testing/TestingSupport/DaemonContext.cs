@@ -4,38 +4,50 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using JasperFx.Core;
+using JasperFx.Core.Reflection;
+using Lamar.Microsoft.DependencyInjection;
 using Marten.Events;
 using Marten.Events.Daemon;
-using Marten.Events.Daemon.HighWater;
+using Marten.Events.Daemon.Coordination;
+using Marten.Events.Daemon.Resiliency;
 using Marten.Events.Projections;
 using Marten.Storage;
 using Marten.Testing.Harness;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Shouldly;
+using Xunit;
 using Xunit.Abstractions;
 
 namespace Marten.AsyncDaemon.Testing.TestingSupport;
 
-public abstract class DaemonContext: OneOffConfigurationsContext
+public abstract class DaemonContext: OneOffConfigurationsContext, IAsyncLifetime
 {
+    private int lockId = 10000;
+
     protected DaemonContext(ITestOutputHelper output)
     {
         _schemaName = "daemon";
         theStore.Advanced.Clean.DeleteAllEventData();
         Logger = new TestLogger<IProjection>(output);
 
-        theStore.Options.Projections.DaemonLockId++;
+        // Creating a little uniqueness
+        lockId++;
+
+        theStore.Options.Projections.DaemonLockId = lockId;
 
         _output = output;
     }
 
     public ILogger<IProjection> Logger { get; }
 
-    internal async Task<ProjectionDaemon> StartDaemon()
+    internal async Task<IProjectionDaemon> StartDaemon()
     {
-        var daemon = new ProjectionDaemon(theStore, Logger);
+        var daemon = theStore.Tenancy.Default.Database.As<MartenDatabase>()
+            .StartProjectionDaemon(theStore, new TestOutputMartenLogger(_output));
 
-        await daemon.StartAllShards();
+        await daemon.StartAllAsync();
 
         _daemon = daemon;
 
@@ -46,42 +58,56 @@ public abstract class DaemonContext: OneOffConfigurationsContext
     {
         var daemon = (ProjectionDaemon)await theStore.BuildProjectionDaemonAsync(tenantId, Logger);
 
-        await daemon.StartAllShards();
+        await daemon.StartAllAsync();
 
         _daemon = daemon;
 
         return daemon;
     }
 
-    internal async Task<ProjectionDaemon> StartDaemonInHotColdMode()
+    internal async Task<IHost> StartDaemonInHotColdMode()
     {
-        theStore.Options.Projections.LeadershipPollingTime = 100;
+        var host = await Host.CreateDefaultBuilder()
+            .UseLamar(services =>
+            {
+                services.AddMarten(opts =>
+                {
+                    opts.Connection(ConnectionSource.ConnectionString);
+                    opts.DatabaseSchemaName = _schemaName;
+                    opts.Projections.LeadershipPollingTime = 100;
+                    opts.Projections.DaemonLockId = lockId;
 
-        var coordinator =
-            new HotColdCoordinator(theStore.Tenancy.Default.Database, theStore.Options.Projections, Logger);
-        var daemon = new ProjectionDaemon(theStore, theStore.Tenancy.Default.Database,
-            new HighWaterDetector(coordinator, theStore.Events, Logger), Logger);
+                    opts.Projections.Add(new TripProjectionWithCustomName(), ProjectionLifecycle.Async);
+                }).AddAsyncDaemon(DaemonMode.HotCold);
+            }).StartAsync();
 
-        await daemon.UseCoordinator(coordinator);
+        _disposables.Add(host);
 
-        _daemon = daemon;
+        theStore = (DocumentStore)host.Services.GetRequiredService<IDocumentStore>();
 
-        _disposables.Add(daemon);
-        return daemon;
+        return host;
     }
 
-    internal async Task<ProjectionDaemon> StartAdditionalDaemonInHotColdMode()
+    internal async Task<IHost> StartAdditionalDaemonInHotColdMode()
     {
-        theStore.Options.Projections.LeadershipPollingTime = 100;
-        var coordinator =
-            new HotColdCoordinator(theStore.Tenancy.Default.Database, theStore.Options.Projections, Logger);
-        var daemon = new ProjectionDaemon(theStore, theStore.Tenancy.Default.Database,
-            new HighWaterDetector(coordinator, theStore.Events, Logger), Logger);
+        var host = await Host.CreateDefaultBuilder()
+            .UseLamar(services =>
+            {
+                services.AddMarten(opts =>
+                {
+                    opts.Connection(ConnectionSource.ConnectionString);
+                    opts.DatabaseSchemaName = _schemaName;
+                    opts.Projections.LeadershipPollingTime = 100;
 
-        await daemon.UseCoordinator(coordinator);
+                    opts.Projections.DaemonLockId = lockId;
 
-        _disposables.Add(daemon);
-        return daemon;
+                    opts.Projections.Add(new TripProjectionWithCustomName(), ProjectionLifecycle.Async);
+                }).AddAsyncDaemon(DaemonMode.HotCold);
+            }).StartAsync();
+
+        _disposables.Add(host);
+
+        return host;
     }
 
     protected Task WaitForAction(string shardName, ShardAction action, TimeSpan timeout = default)
@@ -132,7 +158,7 @@ public abstract class DaemonContext: OneOffConfigurationsContext
     public long NumberOfEvents => _streams.Sum(x => x.Events.Count);
 
     private readonly List<TripStream> _streams = new List<TripStream>();
-    private ProjectionDaemon _daemon;
+    private IProjectionDaemon _daemon;
     protected ITestOutputHelper _output;
 
     public IReadOnlyList<TripStream> Streams => _streams;
@@ -325,6 +351,18 @@ public abstract class DaemonContext: OneOffConfigurationsContext
             _completion.SetResult(true);
         }
     }
+
+    public async Task InitializeAsync()
+    {
+        await theStore.Advanced.Clean.DeleteAllDocumentsAsync();
+        await theStore.Advanced.Clean.DeleteAllEventDataAsync();
+    }
+
+    public Task DisposeAsync()
+    {
+        Dispose();
+        return Task.CompletedTask;
+    }
 }
 
 internal class ShardActionWatcher: IObserver<ShardState>
@@ -370,5 +408,13 @@ internal class ShardActionWatcher: IObserver<ShardState>
             _completion.SetResult(value);
             _unsubscribe.Dispose();
         }
+    }
+}
+
+public static class HostExtensions
+{
+    public static ProjectionDaemon Daemon(this IHost host)
+    {
+        return (ProjectionDaemon)host.Services.GetRequiredService<IProjectionCoordinator>().DaemonForMainDatabase();
     }
 }

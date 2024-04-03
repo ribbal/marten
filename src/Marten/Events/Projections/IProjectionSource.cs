@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Marten.Events.Daemon;
+using Marten.Events.Daemon.Internals;
 using Marten.Storage;
 using Weasel.Core;
 
@@ -26,6 +27,12 @@ public interface IProjectionSource: IReadOnlyProjectionData
         CancellationToken cancellationToken);
 
     IProjection Build(DocumentStore store);
+
+    /// <summary>
+    /// Specify that this projection is a non 1 version of the original projection definition to opt
+    /// into Marten's parallel blue/green deployment of this projection.
+    /// </summary>
+    public uint ProjectionVersion { get; set; }
 }
 
 /// <summary>

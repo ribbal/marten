@@ -25,10 +25,7 @@ public class Bug_2074_recovering_from_errors
 
             options.Projections.Add<UserIssueCounterProjection>(ProjectionLifecycle.Async);
 
-            options.Projections.OnApplyEventException()
-                .RetryLater(250.Milliseconds(), 500.Milliseconds(), 1.Seconds())
-                .Then
-                .Pause(5.Seconds());
+            options.Projections.Errors.SkipApplyErrors = true;
         });
 
         await using var provider = services.BuildServiceProvider();
@@ -39,7 +36,7 @@ public class Bug_2074_recovering_from_errors
 
         var logger = provider.GetRequiredService<ILogger<IProjectionDaemon>>();
         using var daemon = await documentStore.BuildProjectionDaemonAsync(logger: logger).ConfigureAwait(false);
-        await daemon.StartAllShards();
+        await daemon.StartAllAsync();
 
         var waiter = daemon.Tracker.WaitForShardState("UserIssueCounter:All", 1000, 1.Hours());
 

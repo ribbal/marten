@@ -1,6 +1,7 @@
 #nullable enable
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using JasperFx.CodeGeneration;
 using JasperFx.Core.Reflection;
 using Marten.Schema;
@@ -72,12 +73,3 @@ public class SingleStreamProjection<T>: GeneratedAggregateProjectionBase<T>
     }
 }
 
-[Obsolete("Please switch to SingleStreamProjection<T> with the exact same syntax")]
-public class SingleStreamAggregation<T>: SingleStreamProjection<T>
-{
-}
-
-[Obsolete("Please switch to SingleStreamProjection<T> with the exact same syntax")]
-public class AggregateProjection<T>: SingleStreamProjection<T>
-{
-}

@@ -195,7 +195,7 @@ public class build_aggregate_multiple_projections: DaemonContext
 
         try
         {
-            await daemon.RebuildProjection<CarProjection>(default);
+            await daemon.RebuildProjectionAsync<CarProjection>(default);
         }
         catch (Exception ex)
         {
@@ -203,7 +203,7 @@ public class build_aggregate_multiple_projections: DaemonContext
         }
         finally
         {
-            await daemon.StopAll();
+            await daemon.StopAllAsync();
             daemon.Dispose();
         }
 
@@ -259,11 +259,9 @@ public class build_aggregate_multiple_projections: DaemonContext
         // rebuild the projection
         var daemon = await theStore.BuildProjectionDaemonAsync(logger: Logger);
 
-        await daemon.StartDaemon();
-
         try
         {
-            await daemon.RebuildProjection<CarProjection>(default);
+            await daemon.RebuildProjectionAsync<CarProjection>(default);
         }
         catch (Exception ex)
         {
@@ -271,7 +269,7 @@ public class build_aggregate_multiple_projections: DaemonContext
         }
         finally
         {
-            await daemon.StopAll();
+            await daemon.StopAllAsync();
             daemon.Dispose();
         }
 

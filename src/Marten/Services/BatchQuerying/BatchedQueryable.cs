@@ -23,7 +23,7 @@ internal class BatchedQueryable<T>: IBatchedQueryable<T> where T : class
 
     public IBatchedQueryable<T> Stats(out QueryStatistics stats)
     {
-        Inner = Inner.Stats(out stats);
+        Inner = Inner.As<IMartenQueryable<T>>().Stats(out stats).As<IMartenQueryable<T>>();
         return this;
     }
 
@@ -58,6 +58,12 @@ internal class BatchedQueryable<T>: IBatchedQueryable<T> where T : class
     public ITransformedBatchQueryable<TValue> Select<TValue>(Expression<Func<T, TValue>> selection)
     {
         return new TransformedBatchQueryable<TValue>(_parent, Inner.Select(selection).As<IMartenQueryable<TValue>>());
+    }
+
+    public IBatchedQueryable<T> OrderBy(string property, StringComparer comparer)
+    {
+        Inner = Inner.OrderBy(property, comparer).As<IMartenQueryable<T>>();
+        return this;
     }
 
     public IBatchedQueryable<T> Include<TInclude>(Expression<Func<T, object>> idSource, Action<TInclude> callback)

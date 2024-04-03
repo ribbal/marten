@@ -41,12 +41,32 @@ public class CorrelatedMartenLogger: IMartenSessionLogger
         // Do some kind of logging using the correlation id of the ISession
     }
 
+    public void LogSuccess(NpgsqlBatch batch)
+    {
+        // Do some kind of logging using the correlation id of the ISession
+    }
+
+    public void LogFailure(NpgsqlBatch batch, Exception ex)
+    {
+        // Do some kind of logging using the correlation id of the ISession
+    }
+
     public void RecordSavedChanges(IDocumentSession session, IChangeSet commit)
     {
         // Do some kind of logging using the correlation id of the ISession
     }
 
     public void OnBeforeExecute(NpgsqlCommand command)
+    {
+
+    }
+
+    public void LogFailure(Exception ex, string message)
+    {
+
+    }
+
+    public void OnBeforeExecute(NpgsqlBatch batch)
     {
 
     }

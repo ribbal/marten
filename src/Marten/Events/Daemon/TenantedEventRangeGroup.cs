@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Marten.Events.Daemon.Internals;
 using Marten.Events.Projections;
 using Marten.Storage;
 
@@ -82,7 +83,7 @@ internal class TenantedEventRangeGroup: EventRangeGroup
         return $"Tenant Group Range for: {Range}";
     }
 
-    public override Task ConfigureUpdateBatch(IShardAgent shardAgent, ProjectionUpdateBatch batch)
+    public override Task ConfigureUpdateBatch(ProjectionUpdateBatch batch)
     {
         return Parallel.ForEachAsync(Groups, Cancellation,
             async (tenantGroup, token) =>
